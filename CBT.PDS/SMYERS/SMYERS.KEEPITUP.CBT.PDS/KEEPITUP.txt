@@ -1,0 +1,601 @@
+KEEPITUP TITLE '                    W A I T   A   T S O   S E S S I O N>
+                  I N D E F I N I T L Y'
+***********************************************************************
+*                                                                     *
+* Title -- KEEPITUP                                                   *
+*                                                                     *
+* Function / Operation -- KEEPITUP waits a TSO session indefinitely.  *
+*   Once an hour, on the hour, it writes a status message showing     *
+*   the day of the week, the date and time.  On entry it clears the   *
+*   screen using the CLRSCRN TSO command.                             *
+*                                                                     *
+* Command line --                                                     *
+*   KEEPITUP  VERSION  TEST  MAXWAIT(minutes)  INTERVAL(minutes)      *
+*      LONGHEADER\LONGHDR\LH
+*     VERSION -- At the top of each screen write a message showing    *
+*      the KEEPITUP version and the date and time it was assembled.   *
+*     TEST -- Do not use the STAX macro in a testing mode so that an  *
+*      attention will go to the standard system attention interrupt   *
+*      handler.                                                       *
+*     INTERVAL(minutes) -- minutes specifies the number of minutes    *
+*      between screen updates, between 1 and 1440.                    *
+*     MAXWAIT(minutes) -- minutes specifies the maximum number of     *
+*      minutes KEEPITUP can wait.  The time can be specified as 1 or  *
+*      2 digits.  A value greater than the value specified in the     *
+*      INTERVAL keyword is effectively ignored.  The time should be   *
+*      less than the SMF JWT time.                                    *
+*     LONGHEADER\LONGHDR\LH -- Write a "long" header line as the      *
+*      first line on the screen.  This line includes the INTERVAL and *
+*      MAXWAIT values.                                                *
+*     Default - MAXWAIT(5)  INTERVAL(60)                              *
+*     VERSION, TEST and MAXWAIT are keywords, so the usual IKJPARS    *
+*      alternate keywords can be used.                                *
+*     VERSION, TEST, INTERVAL and MAXWAIT are keywords, so the usual  *
+*      IKJPARS keyword shortcus can be used.                          *
+*                                                                     *
+* Attributes -- KEEPITUP is reenterable, refreshable and reusable.    *
+*   It operates in task mode, enabled, problem key and problem state  *
+*   as a TSO command processor.  It uses no APF restricted z/OS       *
+*   resources.                                                        *
+*                                                                     *
+* Status /Change Level --                                             *
+*   V2L4 -- September 2021                                            *
+*    - LINK to CLRSCRN rather than LOAD / CALL; the real CLRSCRN is   *
+*      not reenterable                                                *
+*    - Display logon time as n D h H m M s S in detail message        *
+*   V2L3 -- September 2019                                            *
+*    - Remove system ID from the standard header                      *
+*    - Verion corrected in FMT03 message                              *
+*   V2L2 -- July 2016                                                 *
+*    - Verify interval time is a proper fraction of 60 minutes or     *
+*      24 hours.  The prime factors of 1440 (the number of minutes in *
+*      24 hours) are 2 * 2 * 2 * 2 * 2 * 3 * 3 * 5, so there are very *
+*      few valid values > 60.                                         *
+*    - Display INTERVAL and MAXWAIT values in the top of screen       *
+*      message when the LONGHEADER keyword is specified in the        *
+*      command line.                                                  *
+*    - Display session elapsed time                                   *
+*   V1L1 -- June 2016                                                 *
+*    - Allow interval time to be specified in the command line        *
+*    - Validate MAXWAIT and INTERVAL using IKJPARS validity check     *
+*      exit.  0 is rejected, INTERVAL > 1440 is rejected, MAXWAIT >   *
+*      SMF JWT is rejected.                                           *
+*   V1L0 -- May 2016                                                  *
+*                                                                     *
+* Messages --                                                         *
+*  KEEPITUP RUNNING ON SYS1 FOR ADUMMY STARTED AT  2:31 PM            *
+*  ON SUNDAY MAY 15 INTERVAL(n) MAXWAIT(n)                            *
+*   Reason - This message appears at the top of each screen.  It      *
+*    shows the SMF system ID (SYS1, the date and time it started      *
+*    (2:31 PM ON SUNDAY MAY 15) and the INTERVAL and MAXWAIT values   *
+*    specified in the command line.                                   *
+*   Action - KEEPITUP continues running.                              *
+*   Programmmer response - None required.                             *
+*                                                                     *
+*  IT IS SUNDAY, MAY 15, 2016 10:00:00 AM (16.136) hh:mm              *
+*   Reason - This is the repeated status message.  KEEPITUP writes    *
+*    the message when it starts and repeats it every hour on the      *
+*    hour.  hh:mm represents the session time.                        *
+*   Action - KEEPITUP continues running.                              *
+*   Programmer response - None required.                              *
+*                                                                     *
+*  KEEPITUP V#L# mm/dd/yy hh:mm                                       *
+*   Reason - This message appears when the VERSION parameter is       *
+*    specified in the command line.                                   *
+*   Action - KEEPITUP continues running.                              *
+*   Programmer response - None required.                              *
+*                                                                     *
+* External functions -                                                *
+*  - MINIFMT -- Create a message using a format                       *
+*  - WEEKDAY -- Determine current day of week                         *
+*  - CLRSCRN -- A TSO command processor to clear the 3270 screen      *
+*                                                                     *
+* Y2K & Y21K -- KEEPITUP is Y2K & Y21K compliant.  The year in the    *
+*   KEEPITUP V#L# message is not compliant; rather it is from the     *
+*   Assembler program.  The MINIFMT function creates dates in other   *
+*   messages; they depend on MINIFMT being Y2K & Y21K compliant.      *
+*   Although no year is displayed in the date in the KEEPITUP RUNNING *
+*   ON message, it depends on MINIFMT being Y21K compliant.           *
+*                                                                     *
+***********************************************************************
+         SPACE 5
+KEEPITUP CSECT                     Define program CSECT
+KEEPITUP AMODE 31                  Establish AMODE
+KEEPITUP RMODE ANY
+         USING PPL,11
+         USING *,12                Establish addressability
+         USING SAVE,13
+         SAVE  (14,12),,'KEEPITUP &SYSDATE &SYSTIME'  Save registers
+         LR    12,15               Prepare base register
+         LR    2,1                 Copy CPPL address to reg 2
+         LM    6,9,0(1)            Load the CPPL into regs 6 through 9
+         LA    5,WASIZE            Allocate storage for the work area
+         GETMAIN RU,LV=(5),LOC=(24,ANY)
+         LR    4,1                 Copy address to reg 4
+         LR    11,1                  and reg 11
+         SR    15,15               Clear the work area
+         MVCL  4,14
+         LA    15,SAVEAREA         Compute new save area address
+         ST    13,4(,15)           Add new save area to the
+         ST    15,8(,13)            save area chain
+         LR    13,15               Prepare new save area pointer
+         TIMEUSED STORADR=STARTTM,CPU=MIC,LINKAGE=SYSTEM  Save start  ->
+                                                           time
+         ST    RCBUF,PPLCBUF       Initialize
+         ST    RECT,PPLECT          the
+         ST    RUPT,PPLUPT           Parse
+         LA    0,TSOECB               Parameter
+         ST    0,PPLECB                List
+         LA    0,PDLPTR
+         ST    0,PPLANS
+         L     0,=A(TSOPCL)
+         ST    0,PPLPCL
+         L     0,=A(100*5*60)      Prepare MAXWAIT just in case
+         ST    0,MAXWAIT            IKJPARS failed
+         LINK  SF=(E,LINKPARS),MF=(E,(11))  Call IKJPARS
+         LTR   15,15               IKJPARS OK?
+         BNZ   NOPARS              No
+         L     10,PDLPTR           Load address of the PDL
+         USING TSOPDL,10           Establish PDL addressability
+         LA    0,5                 Load the default MAXWAIT
+         TM    PDLWAIT+6,X'80'     MAXWAIT specified?
+         BZ    NOWAIT              No
+         LH    15,PDLWAIT+4        Load the length of the string
+         L     14,PDLWAIT          Load address of the string
+         BCTR  15,0                Reduce the length by 1
+         EX    15,PACKWAIT         Convert the string to decimal
+         CVB   0,64(,13)           Convert the string to bunary
+NOWAIT   ST    0,IMAXWAIT
+         MHI   0,100*60            Multiply the string by timer units ->
+                                    in 1 minute
+         ST    0,MAXWAIT           Store the MAXWAIT
+         LH    15,PDLINTV+4        Load bytes in interval time
+         L     14,PDLINTV          Load address of the interval time
+         BCTR  15,0                Reduce length by 1
+         EX    15,PACKWAIT         Convert interval time to decimal
+         CVB   0,64(,13)           Convert interval time to binary
+         ST    0,IINTERVAL
+         MHI   0,100*60            Multiply time by timer unite in    ->
+                                    one minute
+         ST    0,INTERVAL          Save the interval
+         ICM   0,B'0011',PDLVER    Version?
+         BZ    *+L'*+4             No
+         OI    SWITCH,VER          Set the flag
+         ICM   0,B'0011',PDLTEST   Test?
+         BZ    *+L'*+4             No
+         OI    SWITCH,TEST         Set the flag
+         ICM   0,B'0011',PDLHDR
+         BZ    *+L'*+4
+         OI    SWITCH,LONGHDR
+         DROP  10
+         IKJRLSA PDLPTR            Free the PDL
+NOPARS   MVC   ITIMEUP,ITIMEUPX    Initialize STIMER exit routine
+         MVC   STAXEXIT,STAXXIT    Initialize STAX exit routine
+         LA    0,(ECBX-ITIMEUPX)+ITIMEUP    Initialize the
+         LA    1,(STAXECB-STAXXIT)+STAXEXIT  ECB list
+         STM   0,1,ECBLIST
+         OI    ECBLIST+4,X'80'
+         TM    SWITCH,TEST
+         BO    GETSIZE
+         STAX  STAXEXIT,MF=(E,STAXPARM)  Prepare for an attention
+GETSIZE  GTSIZE ,
+         STC   0,SCRSIZE2          Store the screen size
+         L     2,CVTPTR            Load address of the CVT
+         L     3,CVTTCBP-CVTMAP(,2)  Load address of the TCB pointers
+         L     3,4(,3)             Load address of the current TCB
+         L     3,TCBTIO-TCB(,3)    Load addrsss of the TIOT
+         L     2,CVTSMCA-CVTMAP(,2)  Load address of the SMCA
+         L     15,=V(WEEKDAY)      Load address of WEEKDAY
+         CALL  (15)                Call WEEKDAY
+         MHI   15,L'DAYOFWEEK      Multiply day of the week by the    ->
+                                    length of a week day name
+         LA    4,DAYOFWEEK(15)     Compute address of the weekday name
+         LA    0,FMTWORK           Prepare
+         LA    1,FMT02              KEEPITUP STARTED ON ... message
+         TM    SWITCH,LONGHDR
+         BZ    *+L'*+4
+         LA    1,FMT05
+         L     15,=V(MINIFMT)
+         CALL  (15)
+         LR    0,1                 Copy the message to STARTBUF
+         LH    1,0(,1)
+         LA    14,STARTBUF
+         LR    15,1
+         MVCL  14,0
+BIGLOOP  LINK  MF=(E,(2)),EP=CLRSCRN
+         SR    3,3                 Load the screen size
+         IC    3,SCRSIZE2
+         AHI   3,-4                Subtract 4
+         LA    15,4                Write the top of screen message
+         LA    1,STARTBUF
+         LH    0,0(,1)
+         CHI   0,78+4              Message longer than 1 line?
+         BNH   *+L'*+2             No
+         BCTR  3,0                 Subtract 1 from screen size
+         AR    1,15
+         SR    0,15
+         BNP   LOOP
+         TPUT  (1),(0),R
+         TM    SWITCH,VER
+         BZ    LOOP
+         LA    1,FMT03
+         BAS   14,TPUTMSG
+         BCTR  3,0
+LOOP     L     15,=V(WEEKDAY)      Get the day of the week
+         CALL  (15)
+         MHI   15,L'DAYOFWEEK      Multiply day of week by bytes in   ->
+                                    the day of week text
+         LA    4,DAYOFWEEK(15)     Compute address of the weekday text
+         TIME  BIN                 Get the current date & time
+         STM   0,1,NOW             Save the current date & time
+         L     15,CVTPTR           Obtain the address of the JMR
+         L     15,CVTTCBP-CVTMAP(,15)  CVT -> TCB pointers ->
+         L     15,4(,15)                current TCB -> TCT -> JMR
+         L     15,TCBTCT-TCB(,15)
+         L     10,TCTJMR-SMFTCT(,15)
+         L     15,=V(SMFETIME)     Load address of SMFETIME to        ->
+                                    calculate the session time
+         CALL  (15),(JMRENTRY-JMR(,10),NOW,ELAPSED),MF=(E,EPARM)
+         SR    0,0                 Load the session time
+         L     1,ELAPSED
+         D     0,=A(100)           Compute seconds
+         SR    0,0
+         D     0,=A(60)            Compute minutes & seconds
+         ST    0,SECONDS           Save seconds
+         LR    1,0                 Copy minutes to reg 1
+         SR    0,0                 Convert minutes to hours & minutes
+         D     0,=F'60'
+         ST    0,MINUTES           Save minutes
+         SR    0,0                 Convert hours to days & hours
+         D     0,=F'24'
+         ST    1,DAYS
+         ST    0,HOURS
+         LA    1,FMT01             Prepare and write IT IS ... msg
+         BAS   14,TPUTMSG
+SKIPMSG  TIME  BIN                 Get the time of day
+         LR    5,0                 Copy the time of day to reg 5
+         L     1,INTERVAL          Load timer units in 1 hour
+         AR    5,1                 Add 1 hour to time of day
+         SR    4,4                 Divide new time of day by timer
+         DR    4,1                  units in 1 hour
+         SR    4,4                 Convert hour of day to
+         MR    4,1                  timer units
+         SR    5,0                 Compute timer units to next hour
+         L     0,MAXWAIT           Load MAXWAIT from the command line
+         CR    5,0                 Test if MAXWAIT remains
+         BNH   LASTSET             Br if less than MAXWAIT remains
+         ST    0,WAITTIME          Wait for 5 minutes
+         MVI   (ECBX-ITIMEUPX)+ITIMEUP,0  Reset the timer ECB
+         STIMER REAL,ITIMEUP,BINTVL=WAITTIME  Start the time interval
+         WAIT  1,ECBLIST=ECBLIST,LONG=YES  Wait for something to happen
+         TM    (STAXECB-STAXXIT)+STAXEXIT,X'40'  Attention?
+         BO    EXITX                             Yes
+         B     SKIPMSG             Do it again
+PACKWAIT PACK  64(8,13),0(*-*,14)  ** EX only **
+LASTSET  ST    5,WAITTIME          Wait to the start of the next hour
+         MVI   (ECBX-ITIMEUPX)+ITIMEUP,0  Reset the timer ECB
+         STIMER REAL,ITIMEUP,BINTVL=WAITTIME  Start the time interval
+         C     5,=A(100*5)         Test the time interval
+         BNH   SHORTWAIT           Br if <= 5 seconds
+         WAIT  1,ECBLIST=ECBLIST,LONG=YES  Wait for the timer to expire
+         B     TESTECB
+SHORTWAIT WAIT  1,ECBLIST=ECBLIST  Wait for the timer to expire
+TESTECB  TM    (STAXECB-STAXXIT)+STAXEXIT,X'40'  Attention?
+         BO    EXITX                             Yes
+         BCT   3,LOOP              Br if the screen is not full
+         B     BIGLOOP             Start a new screen
+         USING SAVE,13
+EXITX    TTIMER CANCEL             Just in case, kill timer interval
+         TIMEUSED STORADR=STOPTM,CPU=MIC,LINKAGE=SYSTEM  Save ending  ->
+                                                          time
+         LG    1,STOPTM            Compute time used in KEEPITUP
+         SG    1,STARTTM
+         SR    0,0                 Convert micro seconds to
+         D     0,=F'10000'          1/100th seconds
+         CVD   1,DWORK             Convert time to packed decimal
+         MVC   TUSED,TPATT         Copy edit pattern to work area
+         LA    1,TUSED+3           Compute addr of the default first  ->
+                                    significant digit
+         EDMK  TUSED,DWORK+5       Convert paxcked decimal to digits
+         LR    3,1                 Copy addr of the first significant ->
+                                    digit to reg 3
+         LA    2,TUSED+L'TUSED     Compute addr of the end of the     ->
+                                    CPU used time
+         SR    2,3                 Compute number of digits in CPU    ->
+                                    used time
+*        LA    1,FMT04             Compute address of the format
+*        BAS   14,TPUTMSG          Generate & write the last message
+         DROP  13
+EXIT     L     13,4(,13)           Load address of the higher save area
+         LA    0,WASIZE            Free the work area
+         FREEMAIN RU,LV=(0),A=(11)
+         RETURN (14,12),T,RC=0     Restore registers & return to TMP
+         EJECT
+         CNOP  0,8
+TPUTMSG  BASR  15,0                Store current address in reg 15
+         SAVE  (14,1),,TPUTMSG     Save registers
+         LA    15,72(,13)          Add new save area
+         ST    13,4(,15)            to the save area chain
+         ST    15,8(,13)
+         LR    13,15               Prepare new save area pointer
+         LA    0,FMTWORK           Load MINIFMT work area address
+         L     15,=V(MINIFMT)      Prepare the message
+         CALL  (15)
+         LA    15,4                Load size of an RDWW
+         LH    0,0(,1)             Load the message length
+         AR    1,15                Compute address of the msg text
+         SR    0,15                Compute length of the message text
+         BNP   TPUTM100            Oops
+         TPUT  (1),(0),R           Write the message
+TPUTM100 L     13,4(,13)           Load address of the higher save area
+         RETURN (14,1)             Restore registers & return
+         EJECT
+         PUSH  USING
+         DROP  ,
+* Timer interval completion exit, post the timer ECB.  This code
+* is copied to the work area and executed in the work area
+         CNOP  0,8
+ITIMEUPX BASR  3,0
+         USING *,3
+         POST  ECBX,0
+         SVC   3
+ECBX     DC    F'0'
+ITIMESZ  EQU   *-ITIMEUPX
+         SPACE 5
+* STAX exit routine, post the STAX ECB.
+* This code is copied to the work area and executed in the work area.
+         CNOP  0,8
+STAXXIT  BASR  3,0
+         USING *,3
+         POST  STAXECB,0
+         SVC   3
+STAXECB  DC    F'0'
+STAXSIZE EQU   *-STAXXIT
+         DROP  ,
+         EJECT
+         CNOP  0,8
+         USING *,15                Establish addressability
+TESTWAIT SAVE  (14,1),,*           Save registers
+         L     1,0(,1)             Load address of the PDE
+         LH    14,4(,1)            Load length of the wait time text
+         BCTR  14,0                Reduce length by 1
+         L     1,0(,1)             Load address of the wait time text
+         EX    14,TSTIPACK         Convert text to decimal
+         CVB   0,64(,13)           Convert wait time to binary
+         LTR   0,0                 WAITTIME(0)
+         BZ    TSTIRC4             No, no
+         MHI   0,60                Convert wait time to seconds
+         L     14,CVTPTR           Load address of the CVT
+         L     14,CVTSMCA-CVTMAP(,14)  Load address of the SMCA
+         ICM   1,B'1111',SMCAJWT-SMCABASE(14)  Load JWT
+         BZ    TSTIRC0             Br if JWT = 0
+         CR    0,1                 Compare wait time w/ JWT
+         BH    TSTIRC4             Br if wait time > JWT
+         B     TSTIRC0             Wsit time is OK
+         SPACE 5
+         CNOP  0,8
+         USING *,15                Establish addressability
+TESTINTV SAVE  (14,1),,*           Save registers
+         L     1,0(,1)             Load address of the proposed       ->
+                                    interval time PDE
+         LH    14,4(,1)            Load proposed length
+         BCTR  14,0                Reduce proposed length by 1
+         L     1,0(,1)             Load address of proposed time
+         EX    14,TSTIPACK         Convert proposed time to decimal
+         CVB   14,64(,13)          Convert proposed time to binary
+         LTR   14,14               INTERVAL(0)?
+         BZ    TSTIRC4             Yes
+         CHI   14,24*60            Test if greater than 24 hours
+         BH    TSTIRC4             Oops
+         SR    0,0                 Set reg 0 = 0
+         CHI   14,60               Compare minutes with 60
+         BNH   TSTI60              Br if minutes <= 60
+         LHI   1,24*60             Load minutes in 24 hours
+         B     TSTIREM
+TSTI60   LHI   1,60                Load minutes in 1 hour
+TSTIREM  DR    0,14                Divide max time by proposed time
+         LTR   0,0                 Test the remainder
+         BNZ   TSTIRC4             Not 0, reject the proposed time
+TSTIRC0  RETURN (14,1),RC=0        Proposed time is OK
+TSTIRC4  RETURN (14,1),RC=4        Proposed time is not valid
+TSTIPACK PACK  64(8,13),0(*-*,1)   ** EX only **
+         POP   USING
+         DC    0D'0'
+         LTORG ,
+         SPACE 1
+* MINIFMT formats
+C0       EQU   X'C0'               Define mask for variable + S con
+FMT01    DC    AL1(L'FMT01A)
+FMT01A   DC    C'IT IS '
+         DC    AL.2(3),AL.6(0),AL1(L'DAYOFWEEK,0),SL2(0(4))
+         DC    AL1(2),C', '
+         DC    AL.2(3),AL.6(4),AL1(7,4)
+         DC    AL1(2),C' ('
+         DC    AL.2(3),AL.6(4),AL1(9,0)
+         DC    AL1(1),C'.'
+         DC    AL.2(3),AL.6(4),AL1(14,0)
+         DC    AL1(2),C') '
+         DC    AL1(C0+1,L'DAYS,0),SL2(DAYS)
+         DC    AL1(3),CL3' D '
+         DC    AL1(C0+1,L'HOURS,0),SL2(HOURS)
+         DC    AL1(3),CL3' H '
+         DC    AL1(C0+1,L'MINUTES,0),SL2(MINUTES)
+         DC    AL1(3),C' M '
+         DC    AL1(C0+1,L'SECONDS,0),SL2(SECONDS)
+         DC    AL1(2),C' S',X'FF'
+         SPACE 1
+         USING SMCABASE,2
+         USING TIOT,3
+FMT02    DC    AL1(L'FMT02A)
+FMT02A   DC    C'KEEPITUP RUNNING '
+*FMT02A   DC    C'KEEPITUP RUNNING ON '
+*        DC    AL.2(3),AL.6(0),AL1(L'SMCASID,0),SL2(SMCASID)
+         DC    AL1(L'FMT02B)
+*FMT02B   DC    C' FOR '
+FMT02B   DC    C'FOR '
+         DC    AL.2(3),AL.6(0),AL1(L'TIOCNJOB,0),SL2(TIOCNJOB)
+         DC    AL1(L'FMT02C)
+FMT02C   DC    C' STARTED AT '
+         DC    AL.2(3),AL.6(4),AL1(0,2)
+         DC    AL1(L'FMT02D)
+FMT02D   DC    C' ON '
+         DC    AL.2(3),AL.6(0),AL1(L'DAYOFWEEK,0),SL2(0(4))
+         DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(4),AL1(12,0)
+         DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(4),AL1(13,0),X'FF'
+         DROP  2,3
+         SPACE 1
+FMT03    DC    AL1(L'FMT03A)
+FMT03A   DC    C'KEEPITUP V2L4 &SYSDATE &SYSTIME',X'FF'
+         SPACE 1
+*        USING SAVE,13
+*FMT04    DC    AL1(L'FMT04A)
+*FMT04A   DC    C'KEEPITUP USED '
+*        DC    AL.2(3),AL.6(3),AL1(0,0),SL2(R2+3)
+*        DC    AL.2(3),AL.6(0),AL1(0,0),SL2(0(3))
+*        DC    AL1(L'FMT04B)
+*FMT04B   DC    C' CPU SECONDS',X'FF'
+*        DROP  13
+         SPACE 1
+         USING SMCABASE,2
+         USING TIOT,3
+FMT05    DC    AL1(L'FMT05A)
+FMT05A   DC    C'KEEPITUP RUNNING ON '
+         DC    AL.2(3),AL.6(0),AL1(L'SMCASID,0),SL2(SMCASID)
+         DC    AL1(L'FMT05B)
+FMT05B   DC    C' FOR '
+         DC    AL.2(3),AL.6(0),AL1(L'TIOCNJOB,0),SL2(TIOCNJOB)
+         DC    AL1(L'FMT05C)
+FMT05C   DC    C' STARTED AT '
+         DC    AL.2(3),AL.6(4),AL1(0,2)
+         DC    AL1(L'FMT05D)
+FMT05D   DC    C' ON '
+         DC    AL.2(3),AL.6(0),AL1(L'DAYOFWEEK,0),SL2(0(4))
+         DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(4),AL1(12,0)
+         DC    AL1(1),C' '
+         DC    AL.2(3),AL.6(4),AL1(13,0)
+         DC    AL1(L'FMT05G)
+FMT05G   DC    C'  INTERVAL('
+         DC    AL.2(3),AL.6(1),AL1(L'IINTERVAL,0),SL2(IINTERVAL)
+         DC    AL1(L'FMT05H)
+FMT05H   DC    C')  MAXWAIT('
+         DC    AL.2(3),AL.6(1),AL1(L'IMAXWAIT,0),SL2(IMAXWAIT)
+         DC    AL1(1),C')',X'FF'
+         DROP  2,3
+         SPACE 1
+DAYOFWEEK DC   C'SUNDAY   '
+         DC    C'MONDAY   '
+         DC    C'TUESDAY  '
+         DC    C'WEDNESDAY'
+         DC    C'THURSDAY '
+         DC    C'FRIDAY   '
+         DC    C'SATURDAY '
+         SPACE 1
+*                  5 6  7
+*                 0----+-
+TPATT    DC    0C' NNN.NN',C' ',X'202120',C'.',X'2020'
+*                 0----+-
+EPATT    DC    0C' NNN:NN',C' ',X'202120',C':',X'2020'
+         DC    0D'0'
+LINKPARS LINK  SF=L,EP=IKJPARS
+         DC    0D'0'
+         EJECT
+         PUSH  PRINT
+         PRINT NOGEN
+TSOPCL   IKJPARM DSECT=TSOPDL
+PDLVER   IKJKEYWD
+         IKJNAME VERSION
+PDLTEST  IKJKEYWD
+         IKJNAME TEST
+PDLWAITK IKJKEYWD DEFAULT='MAXWAIT(5)'
+         IKJNAME MAXWAIT,SUBFLD=PDLWAITS
+PDLINTVK IKJKEYWD DEFAULT='INTERVAL(60)'
+         IKJNAME INTERVAL,SUBFLD=PDLINTVS
+PDLHDR   IKJKEYWD
+         IKJNAME LONGHEADER
+         IKJNAME LONGHDR
+         IKJNAME LH
+PDLINTVS IKJSUBF
+PDLINTV  IKJIDENT 'INTERVAL',FIRST=NUMERIC,OTHER=NUMERIC,MAXLNTH=4,   ->
+               PROMPT='MINUTES BETWEEN SCREEN UPDATES',               ->
+               VALIDCK=TESTINTV
+PDLWAITS IKJSUBF
+PDLWAIT  IKJIDENT 'MAXIMUM WAIT TIME',FIRST=NUMERIC,OTHER=NUMERIC,    ->
+               MAXLNTH=2,PROMPT='MAXIMUM WAIT INTERVAL IN MINUTES',   ->
+               VALIDCK=TESTWAIT
+         IKJENDP
+TSOPCL   CSECT
+TSOPCL   RMODE ANY
+         DC    0D'0'
+         CVT   DSECT=YES
+         IEESMCA
+         IKJTCB
+         IEFTCT
+         IEFJMR
+TIOT     DSECT
+         IEFTIOT1
+         IKJCPPL ,
+RCBUF    EQU   ((CPPLCBUF-CPPL)/4)+6
+*RPSCB    EQU   ((CPPLPSCB-CPPL)/4)+6
+RECT     EQU   ((CPPLECT-CPPL)/4)+6
+RUPT     EQU   ((CPPLUPT-CPPL)/4)+6
+         IKJPPL ,
+SAVEAREA DS    (2*9)D'0'           2 72 byte register save areas
+STARTTM  DS    FD
+STOPTM   DS    FD
+NOW      DS    2F
+FMTWORK  DS    XL200               MINIFMT work area
+ITIMEUP  DS    XL(ITIMESZ),0F
+STAXEXIT DS    XL(STAXSIZE),0D
+STAXPARM STAX  MF=L
+EPARM    CALL  ,(*-*,*-*,*-*),MF=L SMFETIME parm list
+ELAPSED  DS    F                   Session time returned by SMDETIME
+ECBLIST  DS    2A(0)
+TSOECB   DS    F
+PDLPTR   DS    A
+INTERVAL DS    F
+IINTERVAL DS   F
+WAITTIME DS    F                   STIMER macro wait interval
+MAXWAIT  DS    F
+IMAXWAIT DS    F
+*TERMPARM GTTERM MF=L
+*SCRSIZE  DC    AL2(0)
+SCRSIZE2 DC    AL2(0)
+SECONDS  DS    F
+MINUTES  DS    F
+HOURS    DS    F
+DAYS     DS    F
+         SPACE 1
+STARTBUF DS    2AL2(0),CL160
+TUSED    DS    CL(L'TPATT)
+SWITCH   DS    AL1
+VER      EQU   X'01'
+TEST     EQU   X'02'
+LONGHDR  EQU   X'04'
+         DS    0D
+WASIZE   EQU   *-PPL
+         SPACE 2
+SAVE     DSECT
+         DS    F                   Reserved
+HSA      DS    A                   -> Higher save area
+LSA      DS    A                   -> Lower save area
+R14      DS    F                   Register 14
+R15      DS    F                             15
+R0       DS    F                              0
+R1       DS    F                               1
+R2       DS    F                                2
+R3       DS    F                                 3
+R4       DS    F                                  4
+R5       DS    F                                   5
+R6       DS    F                                    6
+R7       DS    F                                     7
+R8       DS    F                                      8
+R9       DS    F                                       9
+R10      DS    F                                        10
+DWORK    DS    0D
+R11      DS    F                                         11
+R12      DS    F                                          12
+         POP   PRINT
+         END   KEEPITUP
